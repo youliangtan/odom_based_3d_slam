@@ -25,8 +25,12 @@
 #include <pcl/point_types.h>
 #include <pcl/common/transforms.h>
 
+// icp testing
+#include <pcl/registration/icp.h>
 
 
+//** ====== TENTATIVE PARAM =========
+extern float turningRegTresh = 0.3;   // max allowed angular vel tresh for turning robot to register pointcloud
 
 
 
@@ -45,10 +49,14 @@ class PointCloudRegistration
     
     geometry_msgs::Vector3Stamped imu_rpy;
     // sensor_msgs::Imu imu_msg;             // to get imu_msg, and change its orientation
-    int is_encoderOdom_init;              // 1 if first odom value
+    // int is_encoderOdom_init;              // 1 if first odom value
 
+    pcl::PointCloud<pcl::PointXYZ> cloudPrevFrame;    // Prev frame pointcloud
     tf::Transform tf_odom;
+    float base_link_angVel;        // Base_link yaw angle turning angular velocity
+    int cloud_count;               // track number of cloud being summed
 
+    ros::Time odomTimeStmp;       // timestamp from encoder odom
 
   public:
 
@@ -69,7 +77,7 @@ class PointCloudRegistration
       // --- Encoder odom msg from robot
       _sub_encoderOdom = node.subscribe<nav_msgs::Odometry::Ptr>("/odom", 10, &PointCloudRegistration::encoderOdom_Callback, this);
 
-      is_encoderOdom_init = 1;
+      cloud_count = 1;
 
       ROS_INFO("Done with Setup of Sub and Pub for node");
       return true;
@@ -131,6 +139,14 @@ class PointCloudRegistration
 
       Eigen::Affine3f transform = Eigen::Affine3f::Identity(); 
 
+
+      ROS_INFO("Robot Turning Speed: %lf", base_link_angVel);  
+      ROS_INFO("odomTime: %i cloudTime: %i", odomTimeStmp.nsec, _cloud->header.stamp.nsec);  
+      
+      float yaw_timeCompensation = transformPredictionOnTimeDiff(odomTimeStmp.nsec, _cloud->header.stamp.nsec);
+
+      // ==================   Transformation =====================
+
       double x, y, z, roll, pitch, yaw;
       tf::Matrix3x3( tf_odom.getRotation() ).getRPY(roll, pitch, yaw);
       tf::Vector3 vec = tf_odom.getOrigin();
@@ -141,18 +157,30 @@ class PointCloudRegistration
       // The same rotation matrix as before; theta radians around Z axis
       transform.rotate (Eigen::AngleAxisf (roll, Eigen::Vector3f::UnitX()));
       transform.rotate (Eigen::AngleAxisf (pitch, Eigen::Vector3f::UnitY()));
-      transform.rotate (Eigen::AngleAxisf (yaw, Eigen::Vector3f::UnitZ()));
+      transform.rotate (Eigen::AngleAxisf (yaw + yaw_timeCompensation, Eigen::Vector3f::UnitZ()));
 
       // // Executing the transformation
       pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud (new pcl::PointCloud<pcl::PointXYZ> ());
       pcl::transformPointCloud (*velo_cloud, *transformed_cloud, transform);
+      cloudPrevFrame =  *transformed_cloud;
 
-      // Output msg
-      sensor_msgs::PointCloud2 msg;
-      pcl::toROSMsg(*transformed_cloud, msg);
-      msg.header.stamp = _cloud->header.stamp;
-      msg.header.frame_id = _cloud->header.frame_id;
-      _pub_cloudSummation.publish(msg);
+
+      // ==================== end Transformation =====================
+
+
+
+
+      if ( fabs(base_link_angVel) <= turningRegTresh){
+        // only output =) TBC
+
+        // Output msg
+        sensor_msgs::PointCloud2 msg;
+        pcl::toROSMsg(*transformed_cloud, msg);
+        msg.header.stamp = _cloud->header.stamp;
+        msg.header.frame_id = _cloud->header.frame_id;
+        _pub_cloudSummation.publish(msg);
+
+      }
 
     }
   
@@ -176,12 +204,28 @@ class PointCloudRegistration
       w = _encoderOdom->pose.pose.orientation.w;
       tf::Quaternion quat(x,y,z,w);
 
+      base_link_angVel = _encoderOdom->twist.twist.angular.z; // yaw angular vel
+      odomTimeStmp = _encoderOdom->header.stamp;
+
       tf_odom.setOrigin(vec);
       tf_odom.setRotation(quat);
 
-      br.sendTransform(tf::StampedTransform(tf_odom, imu_rpy.header.stamp, "odom", "base_link")); //use imu orientation as odom
+      br.sendTransform(tf::StampedTransform(tf_odom, _encoderOdom->header.stamp, "odom", "base_link")); //use imu orientation as odom
 
     }
+
+    // ** PROTECTED
+    // Compensate rotation diff based of diff in time stamp
+    float transformPredictionOnTimeDiff(int t1, int t2){
+      
+      int time_diff = t2 - t1;
+      float rotate_compensation = base_link_angVel*float(time_diff)/1000000000;
+
+      ROS_INFO("- yaw compensation: %f", rotate_compensation);  
+
+      return rotate_compensation;
+    }
+
 
 };
 
