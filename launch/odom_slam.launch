@@ -4,11 +4,13 @@
 
   <arg name="rviz" default="true" />
   <node pkg="odom_based_3d_slam" type="pointcloudRegistration" name="pointcloudRegistration"  output="screen">
+    <param name="turningRegTresh" type="double" value="0.3" />
+    <param name="timeStampCompensation" type="int" value="50000000" />
   </node>
 
 
   <!-- /home/youliang/rosbag/imu_office_large.bag  /imu/imu:=/imu_null"    imu_office_large_filter  mapping_bot_filtered  mapping_bot_21Oct19.bag -->
-  <node name="player" pkg="rosbag" type="play" args=" -r 0.5 --clock  /home/youliang/rosbag/testFarm.bag /tf:=/tf_dev_null "/>
+  <node name="player" pkg="rosbag" type="play" args=" -r 1 --clock  /home/youliang/rosbag/testFarm.bag /tf:=/tf_dev_null "/>
   
   <group if="$(arg rviz)">
     <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find odom_based_3d_slam)/rviz/PointCloudRegistration.rviz" />
