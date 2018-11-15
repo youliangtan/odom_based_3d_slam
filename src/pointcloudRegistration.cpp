@@ -1,5 +1,5 @@
 /*   
-* ---  Pointcloud Registration NODE  ---
+* ---  Pointcloud Registration ROS NODE  ---
 * Created by: Tan You Liang (Nov 2018, Hope Technik Project)
 * 
 * Handle Pointcloud Summation for 5 initial frames based on odometry prior to ICP
@@ -62,7 +62,9 @@ class PointCloudRegistration
 
     float turningRegTresh;        // max allowed angular vel tresh for turning robot to register pointcloud
     int timeStampCompensation;    // compensation of velodyne timestamp diff to the actual time stamp
+    float testVal;                // valuable for testing
 
+    //* Parse ROS launch parameters
     bool parseParams(const ros::NodeHandle& nh) {
 
       bool success = true;
@@ -90,6 +92,12 @@ class PointCloudRegistration
           timeStampCompensation = iParam;
           ROS_INFO(" => Set timeStampCompensation: %i", iParam);
         }
+      }
+
+
+      if (nh.getParam("testVal", fParam)) {
+        testVal = fParam;
+        ROS_INFO(" => Set test val: %g", fParam);
       }
 
       ROS_INFO(" Done with param init");
@@ -190,14 +198,17 @@ class PointCloudRegistration
       
       float yaw_timeCompensation = transformPredictionOnTimeDiff(odomTimeStmp.nsec, _cloud->header.stamp.nsec);
 
-      // ==================   Transformation =====================
+
+
+
+      // ==================  odom Transformation =====================
 
       double x, y, z, roll, pitch, yaw;
       tf::Matrix3x3( tf_odom.getRotation() ).getRPY(roll, pitch, yaw);
       tf::Vector3 vec = tf_odom.getOrigin();
 
       // Transformation
-      transform.translation() << vec.x(), vec.y(), vec.z();
+      transform.translation() << 0,0,0;//vec.x(), vec.y(), vec.z(); //TYL TEMP
 
       // The same rotation matrix as before; theta radians around Z axis
       transform.rotate (Eigen::AngleAxisf (roll, Eigen::Vector3f::UnitX()));
@@ -210,10 +221,34 @@ class PointCloudRegistration
       cloudPrevFrame =  *transformed_cloud;
 
 
-      // ==================== end Transformation =====================
+      // ==================== end odom Transformation =====================
 
-      // match current cloud with prev cloud
-      icpMatching(transformed_cloud);
+
+
+      // ==================   ICP Transformation  =====================
+
+      // match current transformed cloud with prev cloud
+      Eigen::VectorXf icp_tf(6);
+      icp_tf = icpMatching(transformed_cloud);
+
+      transform = Eigen::Affine3f::Identity(); 
+
+      // translation
+      transform.translation() << icp_tf[0], icp_tf[1], icp_tf[2];
+
+      // The same rotation matrix as before; theta radians around Z axis
+      transform.rotate (Eigen::AngleAxisf (icp_tf[3], Eigen::Vector3f::UnitX()));
+      transform.rotate (Eigen::AngleAxisf (icp_tf[4], Eigen::Vector3f::UnitY()));
+      transform.rotate (Eigen::AngleAxisf (icp_tf[5], Eigen::Vector3f::UnitZ()));
+
+      // // Executing the transformation
+      pcl::PointCloud<pcl::PointXYZ>::Ptr icp_transformed_cloud (new pcl::PointCloud<pcl::PointXYZ> ());
+      pcl::transformPointCloud (*transformed_cloud, *icp_transformed_cloud, transform);
+      cloudPrevFrame =  *icp_transformed_cloud;
+
+
+      // ==================== end ICP Transformation 2 =====================
+
 
       if ( fabs(base_link_angVel) <= turningRegTresh){
         // only output =) TBC
@@ -221,6 +256,7 @@ class PointCloudRegistration
         // Output msg
         sensor_msgs::PointCloud2 msg;
         pcl::toROSMsg(*transformed_cloud, msg);
+        // pcl::toROSMsg(*icp_transformed_cloud, msg);
         msg.header.stamp = _cloud->header.stamp;
         msg.header.frame_id = _cloud->header.frame_id;
         _pub_cloudSummation.publish(msg);
@@ -229,8 +265,9 @@ class PointCloudRegistration
     }
   
 
-    // temp ICP matching code 
-    void icpMatching(const pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud){
+    // Temporately ICP matching code 
+    // compare current and prev pointcloud, and return transformation between both point cloud
+    Eigen::VectorXf icpMatching(const pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud){
       pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
       pcl::PointCloud<pcl::PointXYZ>::Ptr prev_cloud(new pcl::PointCloud<pcl::PointXYZ>(cloudPrevFrame));
 
@@ -243,14 +280,17 @@ class PointCloudRegistration
 
       Eigen::Matrix4f tf_matrix = icp.getFinalTransformation(); // 4x4 matrix
       Eigen::Matrix3f rot_matrix = tf_matrix.block<3,3>(0,0);   // 3x3 Rot Matrix
-      Eigen::Vector3f rpy = rot_matrix.eulerAngles(2, 1, 0);    // 1x3 rpy rotation
-      // std::cout << "-- ICP 4x4 Matrix: \n" << tf_matrix << std::endl;
+      Eigen::Vector3f rpy = rot_matrix.eulerAngles(0, 1, 2);    // 1x3 rpy rotation
+      std::cout << "-- ICP 4x4 Matrix: \n" << tf_matrix << std::endl;
 
       Eigen::Vector3f xyz; 
       xyz << tf_matrix(0,3), tf_matrix(1,3), tf_matrix(2,3);    // 1x3 xyz trans
-      
-      std::cout << "RPY : " << rpy << std::endl;
-      std::cout << "XYZ: " << xyz  <<std::endl;
+      Eigen::VectorXf vec_xyzrpy(6);
+
+      vec_xyzrpy << xyz, rpy;  
+      std::cout << "XYZRPY : \n" << vec_xyzrpy << std::endl;
+    
+      return vec_xyzrpy;
     }
 
 
